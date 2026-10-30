@@ -59,23 +59,45 @@ type ApiMethod = (payload: unknown, signal?: AbortSignal) => Promise<unknown> | 
 /**
  * Per-method overrides for the derived declaration. Everything not listed
  * uses the default: session id in the `sessionId` JSON body field, no
- * rewrite. `skip` marks methods that must STAY on each machine's own plugin
- * (per-machine settings/model catalog) — they are deliberately undeclared,
- * which zen-remote reads as "local".
+ * rewrite. `sessionField` renames where the locator sits (`childId` for side
+ * chat threads, `rootSessionId` for the topology-rooted surfaces); `rewrite`
+ * marks answers that carry session ids the request never carried — `true`
+ * for whole-response rewriting (ids also appear as object keys or echoed
+ * request fields, which the client resolves by value), `{ fields }` for
+ * named answer fields. `skip` marks methods that must STAY on each machine's
+ * own plugin (per-machine settings/model catalog) — they are deliberately
+ * undeclared, which zen-remote reads as "local".
  */
-const API_METHOD_OVERRIDES: Record<string, { childId?: true; deny?: true; rewrite?: { fields: string[] }; skip?: true }> = {
+const API_METHOD_OVERRIDES: Record<
+  string,
+  { sessionField?: 'childId' | 'rootSessionId'; deny?: true; rewrite?: true | { fields: string[] }; skip?: true }
+> = {
   // Side chat threads address the CHILD session: the id rides `childId`.
-  'sidechat.prompt': { childId: true },
-  'sidechat.cancel': { childId: true },
-  'sidechat.dispose': { childId: true },
-  'sidechat.info': { childId: true },
-  'sidechat.events': { childId: true },
-  'sidechat.dequeue': { childId: true },
-  'sidechat.model': { childId: true },
+  'sidechat.prompt': { sessionField: 'childId' },
+  'sidechat.cancel': { sessionField: 'childId' },
+  'sidechat.dispose': { sessionField: 'childId' },
+  'sidechat.info': { sessionField: 'childId' },
+  'sidechat.events': { sessionField: 'childId' },
+  'sidechat.dequeue': { sessionField: 'childId' },
+  'sidechat.model': { sessionField: 'childId' },
   // Starting a thread MINTS a child session: the answer's `value.childId`
   // must come back wrapped virtual or the phone's follow-up calls would
   // target its own machine.
   'sidechat.start': { rewrite: { fields: ['value.childId'] } },
+  // The cwd lookup echoes the requested `sessionId` back inside the answer —
+  // rewrite it so the remote client sees its own virtual id.
+  'session.cwd': { rewrite: true },
+  // Live-topology surfaces take the RESOLVED ROOT session and answer with
+  // per-session entries keyed by real session ids (subagents.live's `live`
+  // record map; workflows.list's `runs[].originSessionId` and
+  // `phases[].members[].childId`). The answer-side ids are rewritten as a
+  // whole; object keys are resolved by value on the client.
+  'subagents.live': { sessionField: 'rootSessionId', rewrite: true },
+  'workflows.list': { sessionField: 'rootSessionId', rewrite: true },
+  // Shared team tasks address the topology root, but their answers carry no
+  // session ids — only the locator moves.
+  'teams.taskCreate': { sessionField: 'rootSessionId' },
+  'teams.taskUpdate': { sessionField: 'rootSessionId' },
   // `open.external` launches a process on the machine serving the request —
   // exactly what must NOT happen on a remote session's sub-client.
   'open.external': { deny: true },
@@ -88,7 +110,11 @@ const API_METHOD_OVERRIDES: Record<string, { childId?: true; deny?: true; rewrit
 /** The static routes outside the `/sidebar/api` dispatch table, mirroring
  * the registrations in index.ts: session ids ride the `sessionId` query
  * parameter (the html preview carries it as the first path segment after
- * the prefix). The two WebSockets declare `upgrade` and cross as bytes. */
+ * the prefix). The three WebSockets declare `upgrade`; the sidechat push
+ * socket crosses session ids INSIDE its JSON text frames (upstream
+ * `{"op":"watch","threadIds":[…]}`, downstream `{"threadId":"…"}`), so it
+ * additionally declares a frame-body locator and the downstream field to
+ * rewrite — fs-watch and agent-opens carry no session ids at all. */
 function staticRoutes(): ZenRemoteBridgeRoute[] {
   return [
     { path: '/sidebar/file', scope: 'server', methods: ['GET'] },
@@ -98,6 +124,13 @@ function staticRoutes(): ZenRemoteBridgeRoute[] {
     { path: '/sidebar/html', scope: 'server', prefix: true, locator: { in: 'path-segment', index: 0 }, methods: ['GET'] },
     { path: '/sidebar/ws/fs-watch', scope: 'server', upgrade: true },
     { path: '/sidebar/ws/agent-opens', scope: 'server', upgrade: true },
+    {
+      path: '/sidebar/ws/sidechat',
+      scope: 'server',
+      upgrade: true,
+      locator: { in: 'json-body', fields: ['threadIds'] },
+      rewriteIds: { fields: ['threadId'] },
+    },
   ]
 }
 
@@ -110,7 +143,7 @@ export function buildZenRemoteRoutes(api: Record<string, ApiMethod>): ZenRemoteB
     const route: ZenRemoteBridgeRoute = {
       path: `/sidebar/api/${method}`,
       scope: 'server',
-      locator: { in: 'json-body', fields: [meta?.childId === true ? 'childId' : 'sessionId'] },
+      locator: { in: 'json-body', fields: [meta?.sessionField ?? 'sessionId'] },
       methods: ['POST'],
     }
     if (meta?.deny === true) route.deny = true

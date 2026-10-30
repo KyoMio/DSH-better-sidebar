@@ -1,9 +1,11 @@
 /**
  * The zen-remote bridge declaration, derived from a representative dispatch
  * table. These assertions pin the shapes a remote re-router depends on: the
- * per-method overrides (childId threads, the minted id of sidechat.start,
- * the open.external refusal, the per-machine skips), the static routes, and
- * the ceiling zen-remote itself enforces (64 routes per declaration).
+ * per-method overrides (childId threads, rootSessionId-located topology
+ * surfaces, the minted id of sidechat.start, the whole-answer rewrites, the
+ * open.external refusal, the per-machine skips), the static routes including
+ * the frame-level sidechat push socket, and the ceiling zen-remote itself
+ * enforces (64 routes per declaration).
  */
 import { describe, expect, it } from 'vitest'
 
@@ -19,6 +21,10 @@ const fakeApi: Record<string, () => unknown> = {
   'changes.ops': () => ({}),
   'open.external': () => ({}),
   'session.cwd': () => ({}),
+  'subagents.live': () => ({}),
+  'workflows.list': () => ({}),
+  'teams.taskCreate': () => ({}),
+  'teams.taskUpdate': () => ({}),
   'sidechat.start': () => ({}),
   'sidechat.prompt': () => ({}),
   'sidechat.model': () => ({}),
@@ -51,15 +57,29 @@ describe('buildZenRemoteRoutes', () => {
     expect(byPath.get('/sidebar/api/sidechat.prompt')?.locator).toEqual({ in: 'json-body', fields: ['childId'] })
   })
 
-  it('marks sidechat.start\'s minted child id for the virtual rewrite', () => {
+  it('locates the topology-rooted methods on rootSessionId', () => {
+    for (const method of ['subagents.live', 'workflows.list', 'teams.taskCreate', 'teams.taskUpdate']) {
+      expect(byPath.get(`/sidebar/api/${method}`)?.locator).toEqual({ in: 'json-body', fields: ['rootSessionId'] })
+    }
+  })
+
+  it("marks sidechat.start's minted child id for the virtual rewrite", () => {
     expect(byPath.get('/sidebar/api/sidechat.start')?.rewriteIds).toEqual({ fields: ['value.childId'] })
+  })
+
+  it('rewrites the whole answer where session ids ride outside named fields', () => {
+    expect(byPath.get('/sidebar/api/session.cwd')?.rewriteIds).toBe(true)
+    expect(byPath.get('/sidebar/api/subagents.live')?.rewriteIds).toBe(true)
+    expect(byPath.get('/sidebar/api/workflows.list')?.rewriteIds).toBe(true)
+    expect(byPath.get('/sidebar/api/teams.taskCreate')?.rewriteIds).toBeUndefined()
+    expect(byPath.get('/sidebar/api/teams.taskUpdate')?.rewriteIds).toBeUndefined()
   })
 
   it('refuses open.external for remote sessions', () => {
     expect(byPath.get('/sidebar/api/open.external')?.deny).toBe(true)
   })
 
-  it('carries the static routes: query-located POST/GET, the html prefix segment, the two upgrades', () => {
+  it('carries the static routes: query-located POST/GET, the html prefix segment, the three upgrades', () => {
     expect(byPath.get('/sidebar/file')?.methods).toEqual(['GET'])
     expect(byPath.get('/sidebar/upload')?.methods).toEqual(['POST'])
     const html = byPath.get('/sidebar/html')
@@ -67,6 +87,14 @@ describe('buildZenRemoteRoutes', () => {
     expect(html?.locator).toEqual({ in: 'path-segment', index: 0 })
     expect(byPath.get('/sidebar/ws/fs-watch')?.upgrade).toBe(true)
     expect(byPath.get('/sidebar/ws/agent-opens')?.upgrade).toBe(true)
+  })
+
+  it('declares the sidechat push socket with frame-body locating and downstream rewriting', () => {
+    const sidechat = byPath.get('/sidebar/ws/sidechat')
+    expect(sidechat).toBeDefined()
+    expect(sidechat?.upgrade).toBe(true)
+    expect(sidechat?.locator).toEqual({ in: 'json-body', fields: ['threadIds'] })
+    expect(sidechat?.rewriteIds).toEqual({ fields: ['threadId'] })
   })
 })
 
